@@ -25,6 +25,7 @@
 static const uint32_t scanopts[] = {
 	SR_CONF_CONN,
 	SR_CONF_SERIALCOMM,
+	SR_CONF_PROBE_NAMES,
 };
 
 static const uint32_t drvopts[] = {
@@ -32,6 +33,7 @@ static const uint32_t drvopts[] = {
 };
 
 static const uint32_t devopts[] = {
+	SR_CONF_CONN | SR_CONF_GET,
 	SR_CONF_LIMIT_SAMPLES | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
 	SR_CONF_SAMPLERATE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
 	SR_CONF_TRIGGER_MATCH | SR_CONF_LIST,
@@ -99,10 +101,13 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	GSList *l;
 	int num_read;
 	unsigned int i;
-	const char *conn, *serialcomm;
+	const char *conn, *serialcomm, *probe_names;
 	char buf[4] = { 0, 0, 0, 0 };
+	struct dev_context *devc;
+	size_t ch_max;
 
 	conn = serialcomm = NULL;
+	probe_names = NULL;
 	for (l = options; l; l = l->next) {
 		src = l->data;
 		switch (src->key) {
@@ -111,6 +116,9 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 			break;
 		case SR_CONF_SERIALCOMM:
 			serialcomm = g_variant_get_string(src->data, NULL);
+			break;
+		case SR_CONF_PROBE_NAMES:
+			probe_names = g_variant_get_string(src->data, NULL);
 			break;
 		}
 	}
@@ -160,37 +168,59 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 
 		sr_hexdump_free(id);
 		return NULL;
+	} else {
+		sr_dbg("Successful detection, got '%c%c%c%c' (0x%02x 0x%02x 0x%02x 0x%02x).",
+		       buf[0], buf[1], buf[2], buf[3],
+		       buf[0], buf[1], buf[2], buf[3]);
 	}
 
-	/* Definitely using the OLS protocol, check if it supports
-	 * the metadata command.
+	/*
+	 * Create common data structures (sdi, devc) here in the common
+	 * code path. These further get filled in either from metadata
+	 * which is gathered from the device, or from open coded generic
+	 * fallback data which is kept in the driver source code.
+	 */
+	sdi = g_malloc0(sizeof(*sdi));
+	sdi->status = SR_ST_INACTIVE;
+	sdi->inst_type = SR_INST_SERIAL;
+	sdi->conn = serial;
+	sdi->connection_id = g_strdup(serial->port);
+	devc = g_malloc0(sizeof(*devc));
+	sdi->priv = devc;
+	devc->trigger_at_smpl = OLS_NO_TRIGGER;
+	devc->channel_names = sr_parse_probe_names(probe_names,
+		ols_channel_names, ARRAY_SIZE(ols_channel_names),
+		ARRAY_SIZE(ols_channel_names), &ch_max);
+
+	/*
+	 * Definitely using the OLS protocol, check if it supports
+	 * the metadata command. Otherwise assign generic values.
+	 * Create as many sigrok channels as was determined when
+	 * the device was probed.
 	 */
 	send_shortcommand(serial, CMD_METADATA);
-
 	g_usleep(RESPONSE_DELAY_US);
-
 	if (serial_has_receive_data(serial) != 0) {
 		/* Got metadata. */
-		sdi = get_metadata(serial);
+		(void)ols_get_metadata(sdi);
 	} else {
-		/* Not an OLS -- some other board that uses the sump protocol. */
+		/* Not an OLS -- some other board using the SUMP protocol. */
 		sr_info("Device does not support metadata.");
-		sdi = g_malloc0(sizeof(struct sr_dev_inst));
-		sdi->status = SR_ST_INACTIVE;
 		sdi->vendor = g_strdup("Sump");
 		sdi->model = g_strdup("Logic Analyzer");
 		sdi->version = g_strdup("v1.0");
-		for (i = 0; i < ARRAY_SIZE(ols_channel_names); i++)
-			sr_channel_new(sdi, i, SR_CHANNEL_LOGIC, TRUE,
-				       ols_channel_names[i]);
-		sdi->priv = ols_dev_new();
+		devc->max_channels = ch_max;
+	}
+	if (devc->max_channels && ch_max > devc->max_channels)
+		ch_max = devc->max_channels;
+	for (i = 0; i < ch_max; i++) {
+		sr_channel_new(sdi, i, SR_CHANNEL_LOGIC, TRUE,
+			devc->channel_names[i]);
 	}
 	/* Configure samplerate and divider. */
 	if (ols_set_samplerate(sdi, DEFAULT_SAMPLERATE) != SR_OK)
 		sr_dbg("Failed to set default samplerate (%" PRIu64 ").",
 		       DEFAULT_SAMPLERATE);
-	sdi->inst_type = SR_INST_SERIAL;
-	sdi->conn = serial;
 
 	serial_close(serial);
 
@@ -211,6 +241,11 @@ static int config_get(uint32_t key, GVariant **data,
 	devc = sdi->priv;
 
 	switch (key) {
+	case SR_CONF_CONN:
+		if (!sdi->conn || !sdi->connection_id)
+			return SR_ERR_NA;
+		*data = g_variant_new_string(sdi->connection_id);
+		break;
 	case SR_CONF_SAMPLERATE:
 		*data = g_variant_new_uint64(devc->cur_samplerate);
 		break;

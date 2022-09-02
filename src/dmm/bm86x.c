@@ -59,6 +59,22 @@ SR_PRIV gboolean sr_brymen_bm86x_packet_valid(const uint8_t *buf)
 	if (buf[19] != 0x86)
 		return FALSE;
 
+	/*
+	 * 2021-05 update: The devices that we have seen in the field do
+	 * provide four bytes which we can synchronize to. Which happens
+	 * to match the bm52x and bm82x devices' protocol. This condition
+	 * is not documented by the vendor, but improves reliability of
+	 * the re-synchronization for slight offsets, which were seen
+	 * in the field, and which would have kept failing in an earlier
+	 * implementation.
+	 */
+	if (buf[16] != 0x86)
+		return FALSE;
+	if (buf[17] != 0x86)
+		return FALSE;
+	if (buf[18] != 0x86)
+		return FALSE;
+
 	return TRUE;
 }
 
@@ -286,6 +302,8 @@ static void brymen_bm86x_parse(const uint8_t *buf, float *floatval,
 			NULL, &temp_unit, NULL, 0x80);
 		ret = brymen_bm86x_parse_digits(&buf[9], 4, txtbuf,
 			floatval, NULL, &digits, 0x10);
+		if (ret != SR_OK)
+			return;
 
 		/* SI unit. */
 		if (buf[14] & 0x08) {

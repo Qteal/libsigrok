@@ -139,28 +139,6 @@ static int convert_trigger(const struct sr_dev_inst *sdi,
 	return SR_OK;
 }
 
-SR_PRIV struct dev_context *ols_dev_new(void)
-{
-	struct dev_context *devc;
-
-	devc = g_malloc0(sizeof(struct dev_context));
-	devc->trigger_at_smpl = OLS_NO_TRIGGER;
-
-	return devc;
-}
-
-static void ols_channel_new(struct sr_dev_inst *sdi, int num_chan)
-{
-	struct dev_context *devc = sdi->priv;
-	int i;
-
-	for (i = 0; i < num_chan; i++)
-		sr_channel_new(sdi, i, SR_CHANNEL_LOGIC, TRUE,
-			       ols_channel_names[i]);
-
-	devc->max_channels = num_chan;
-}
-
 static void ols_metadata_quirks(struct sr_dev_inst *sdi)
 {
 	struct dev_context *devc;
@@ -175,7 +153,7 @@ static void ols_metadata_quirks(struct sr_dev_inst *sdi)
 	is_shrimp = sdi->model && strcmp(sdi->model, "Shrimp1.0") == 0;
 	if (is_shrimp) {
 		if (!devc->max_channels)
-			ols_channel_new(sdi, 4);
+			devc->max_channels = 4;
 		if (!devc->max_samples)
 			devc->max_samples = 256 * 1024;
 		if (!devc->max_samplerate)
@@ -186,9 +164,9 @@ static void ols_metadata_quirks(struct sr_dev_inst *sdi)
 		devc->device_flags |= DEVICE_FLAG_IS_DEMON_CORE;
 }
 
-SR_PRIV struct sr_dev_inst *get_metadata(struct sr_serial_dev_inst *serial)
+SR_PRIV int ols_get_metadata(struct sr_dev_inst *sdi)
 {
-	struct sr_dev_inst *sdi;
+	struct sr_serial_dev_inst *serial;
 	struct dev_context *devc;
 	uint32_t tmp_int;
 	uint8_t key, type;
@@ -196,10 +174,8 @@ SR_PRIV struct sr_dev_inst *get_metadata(struct sr_serial_dev_inst *serial)
 	GString *tmp_str, *devname, *version;
 	guchar tmp_c;
 
-	sdi = g_malloc0(sizeof(struct sr_dev_inst));
-	sdi->status = SR_ST_INACTIVE;
-	devc = ols_dev_new();
-	sdi->priv = devc;
+	serial = sdi->conn;
+	devc = sdi->priv;
 
 	devname = g_string_new("");
 	version = g_string_new("");
@@ -264,7 +240,7 @@ SR_PRIV struct sr_dev_inst *get_metadata(struct sr_serial_dev_inst *serial)
 			switch (key) {
 			case METADATA_TOKEN_NUM_PROBES_LONG:
 				/* Number of usable channels */
-				ols_channel_new(sdi, tmp_int);
+				devc->max_channels = tmp_int;
 				break;
 			case METADATA_TOKEN_SAMPLE_MEMORY_BYTES:
 				/* Amount of sample memory available (bytes) */
@@ -298,7 +274,7 @@ SR_PRIV struct sr_dev_inst *get_metadata(struct sr_serial_dev_inst *serial)
 			switch (key) {
 			case METADATA_TOKEN_NUM_PROBES_SHORT:
 				/* Number of usable channels */
-				ols_channel_new(sdi, tmp_c);
+				devc->max_channels = tmp_c;
 				break;
 			case METADATA_TOKEN_PROTOCOL_VERSION_SHORT:
 				/* protocol version */
@@ -324,7 +300,7 @@ SR_PRIV struct sr_dev_inst *get_metadata(struct sr_serial_dev_inst *serial)
 	/* Optionally amend received metadata, model specific quirks. */
 	ols_metadata_quirks(sdi);
 
-	return sdi;
+	return SR_OK;
 }
 
 SR_PRIV int ols_set_samplerate(const struct sr_dev_inst *sdi,
